@@ -18,6 +18,7 @@ namespace po = boost::program_options;  // from <boost/program_options.hpp>
 static const char *versionString = XSTR(TNN_VERSION);
 static const char *consoleLine = " TNN-MINER ";
 static const char *targetArch = XSTR(CPU_ARCHTARGET);
+static const char *buildTimestamp = XSTR(TNN_BUILD_TIMESTAMP);
 static const char *TNN = R"(
   
                                                             YB&&@5
@@ -104,13 +105,13 @@ static int colorTable[] = {
 #if defined(_WIN32)
 inline void setcolor(WORD color)
 {
-    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),color);
+    (void) color;
     return;
 }
 #else
 inline void setcolor(int color)
 {
-    printf("\e[%d;%dm", colorPreTable[color], colorTable[color]);
+    (void) color;
 }
 #endif
 

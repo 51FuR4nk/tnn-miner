@@ -6,9 +6,9 @@
 #include <vector>
 
 #include "Salsa20.h"
+#include "portable_rc4.h"
 
 #include <openssl/sha.h>
-#include <openssl/rc4.h>
 
 #define DERO_BATCH 1
 #define MAX_LENGTH ((256 * 277) - 1) // this is the maximum
