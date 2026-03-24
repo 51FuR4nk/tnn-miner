@@ -60,9 +60,11 @@ void initWolfLUT() {
 
 #if defined(__x86_64)
 
-__attribute__((target("avx2")))
+__attribute__((target("avx,avx2")))
 void wolfBranch_avx2(__m256i &in, uint8_t pos2val, uint32_t opcode, workerData &worker)
 {
+  const __m256i vec_3_local = _mm256_set1_epi8(3);
+
   for (int i = 3; i >= 0; --i)
   {
     uint8_t insn = (opcode >> (i << 2)) & 0xF;
@@ -87,10 +89,10 @@ void wolfBranch_avx2(__m256i &in, uint8_t pos2val, uint32_t opcode, workerData &
       in = _mm256_and_si256(in, _mm256_set1_epi8(pos2val));
       break;
     case 6:
-      in = _mm256_sllv_epi8(in,_mm256_and_si256(in,vec_3));
+      in = _mm256_sllv_epi8(in, _mm256_and_si256(in, vec_3_local));
       break;
     case 7:
-      in = _mm256_srlv_epi8(in,_mm256_and_si256(in,vec_3));
+      in = _mm256_srlv_epi8(in, _mm256_and_si256(in, vec_3_local));
       break;
     case 8:
       in = _mm256_reverse_epi8(in);
@@ -119,6 +121,172 @@ void wolfBranch_avx2(__m256i &in, uint8_t pos2val, uint32_t opcode, workerData &
     }      
   }
 }
+
+#if defined(__x86_64)
+__attribute__((target("sse2,ssse3,sse4.1")))
+static inline __m128i genMask_sse41(int bytes)
+{
+  const __m128i sequence = _mm_setr_epi8(
+      0, 1, 2, 3, 4, 5, 6, 7,
+      8, 9, 10, 11, 12, 13, 14, 15);
+  bytes = (bytes < 0) ? 0 : (bytes > 16) ? 16 : bytes;
+  return _mm_cmpgt_epi8(_mm_set1_epi8(static_cast<char>(bytes)), sequence);
+}
+
+__attribute__((target("sse2,ssse3,sse4.1")))
+static inline __m128i sllv_epi8_sse41(__m128i a, __m128i count)
+{
+  const __m128i mask_hi = _mm_set1_epi32(0xFF00FF00);
+  const __m128i multiplier_lut = _mm_setr_epi8(
+      0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, static_cast<char>(0x80),
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
+
+  __m128i count_sat = _mm_min_epu8(count, _mm_set1_epi8(8));
+  __m128i multiplier = _mm_shuffle_epi8(multiplier_lut, count_sat);
+  __m128i x_lo = _mm_mullo_epi16(a, multiplier);
+  __m128i multiplier_hi = _mm_srli_epi16(multiplier, 8);
+  __m128i a_hi = _mm_and_si128(a, mask_hi);
+  __m128i x_hi = _mm_mullo_epi16(a_hi, multiplier_hi);
+
+  return _mm_blendv_epi8(x_lo, x_hi, mask_hi);
+}
+
+__attribute__((target("sse2,ssse3,sse4.1")))
+static inline __m128i srlv_epi8_sse41(__m128i a, __m128i count)
+{
+  const __m128i mask_hi = _mm_set1_epi32(0xFF00FF00);
+  const __m128i multiplier_lut = _mm_setr_epi8(
+      static_cast<char>(0x80), 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
+
+  __m128i count_sat = _mm_min_epu8(count, _mm_set1_epi8(8));
+  __m128i multiplier = _mm_shuffle_epi8(multiplier_lut, count_sat);
+  __m128i a_lo = _mm_andnot_si128(mask_hi, a);
+  __m128i multiplier_lo = _mm_andnot_si128(mask_hi, multiplier);
+  __m128i x_lo = _mm_mullo_epi16(a_lo, multiplier_lo);
+  x_lo = _mm_srli_epi16(x_lo, 7);
+
+  __m128i multiplier_hi = _mm_and_si128(mask_hi, multiplier);
+  __m128i x_hi = _mm_mulhi_epu16(a, multiplier_hi);
+  x_hi = _mm_slli_epi16(x_hi, 1);
+
+  return _mm_blendv_epi8(x_lo, x_hi, mask_hi);
+}
+
+__attribute__((target("sse2,ssse3,sse4.1")))
+static inline __m128i rolv_epi8_sse41(__m128i x, __m128i y)
+{
+  __m128i y_mod = _mm_and_si128(y, _mm_set1_epi8(7));
+  __m128i left_shift = sllv_epi8_sse41(x, y_mod);
+  __m128i right_shift_counts = _mm_sub_epi8(_mm_set1_epi8(8), y_mod);
+  __m128i right_shift = srlv_epi8_sse41(x, right_shift_counts);
+  return _mm_or_si128(left_shift, right_shift);
+}
+
+__attribute__((target("sse2,ssse3,sse4.1")))
+static inline __m128i rol_epi8_sse41(__m128i x, int r)
+{
+  const __m128i mask1 = _mm_set1_epi16(0x00FF);
+  const __m128i mask2 = _mm_set1_epi16(0xFF00);
+  __m128i a = _mm_and_si128(x, mask1);
+  __m128i b = _mm_and_si128(x, mask2);
+
+  __m128i shiftedA = _mm_slli_epi16(a, r);
+  __m128i wrappedA = _mm_srli_epi16(a, 8 - r);
+  __m128i rotatedA = _mm_and_si128(_mm_or_si128(shiftedA, wrappedA), mask1);
+
+  __m128i shiftedB = _mm_slli_epi16(b, r);
+  __m128i wrappedB = _mm_srli_epi16(b, 8 - r);
+  __m128i rotatedB = _mm_and_si128(_mm_or_si128(shiftedB, wrappedB), mask2);
+
+  return _mm_or_si128(rotatedA, rotatedB);
+}
+
+__attribute__((target("sse2,ssse3,sse4.1")))
+static inline __m128i reverse_epi8_sse41(__m128i input)
+{
+  const __m128i lookup = _mm_setr_epi8(
+      0x0, 0x8, 0x4, 0xC, 0x2, 0xA, 0x6, 0xE,
+      0x1, 0x9, 0x5, 0xD, 0x3, 0xB, 0x7, 0xF);
+  const __m128i low_mask = _mm_set1_epi8(0x0F);
+
+  __m128i low = _mm_and_si128(input, low_mask);
+  __m128i high = _mm_and_si128(_mm_srli_epi16(input, 4), low_mask);
+  __m128i rev_low = _mm_shuffle_epi8(lookup, low);
+  __m128i rev_high = _mm_shuffle_epi8(lookup, high);
+
+  return _mm_or_si128(_mm_slli_epi16(rev_low, 4), rev_high);
+}
+
+__attribute__((target("sse2,ssse3,sse4.1")))
+static inline __m128i popcnt_epi8_sse41(__m128i input)
+{
+  return parallelPopcnt16bytes(input);
+}
+
+__attribute__((target("sse2,ssse3,sse4.1")))
+static inline void wolfBranch_sse41(__m128i &in, uint8_t pos2val, uint32_t opcode, workerData &worker)
+{
+  (void) worker;
+  const __m128i vec_3_local = _mm_set1_epi8(3);
+
+  for (int i = 3; i >= 0; --i)
+  {
+    uint8_t insn = (opcode >> (i << 2)) & 0xF;
+    switch (insn)
+    {
+    case 0:
+      in = _mm_add_epi8(in, in);
+      break;
+    case 1:
+      in = _mm_sub_epi8(in, _mm_xor_si128(in, _mm_set1_epi8(97)));
+      break;
+    case 2:
+      in = mullo_epi8(in, in);
+      break;
+    case 3:
+      in = _mm_xor_si128(in, _mm_set1_epi8(static_cast<char>(pos2val)));
+      break;
+    case 4:
+      in = _mm_xor_si128(in, _mm_set1_epi8(static_cast<char>(0xFF)));
+      break;
+    case 5:
+      in = _mm_and_si128(in, _mm_set1_epi8(static_cast<char>(pos2val)));
+      break;
+    case 6:
+      in = sllv_epi8_sse41(in, _mm_and_si128(in, vec_3_local));
+      break;
+    case 7:
+      in = srlv_epi8_sse41(in, _mm_and_si128(in, vec_3_local));
+      break;
+    case 8:
+      in = reverse_epi8_sse41(in);
+      break;
+    case 9:
+      in = _mm_xor_si128(in, popcnt_epi8_sse41(in));
+      break;
+    case 10:
+      in = rolv_epi8_sse41(in, in);
+      break;
+    case 11:
+      in = rol_epi8_sse41(in, 1);
+      break;
+    case 12:
+      in = _mm_xor_si128(in, rol_epi8_sse41(in, 2));
+      break;
+    case 13:
+      in = rol_epi8_sse41(in, 3);
+      break;
+    case 14:
+      in = _mm_xor_si128(in, rol_epi8_sse41(in, 4));
+      break;
+    case 15:
+      in = rol_epi8_sse41(in, 5);
+      break;
+    }
+  }
+}
+#endif
 
 #endif
 
@@ -186,6 +354,30 @@ uint8_t wolfBranch(uint8_t val, uint8_t pos2val, uint32_t opcode)
 }
 
 #if defined(__x86_64)
+__attribute__((target("sse2,ssse3,sse4.1")))
+void wolfPermute_sse41(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint8_t pos2, workerData &worker)
+{
+  uint32_t Opcode = CodeLUT_16[op];
+  int bytes_remaining = pos2 - pos1;
+  int offset = 0;
+
+  while (bytes_remaining >= 16) {
+    __m128i data = _mm_loadu_si128((__m128i*)&in[pos1 + offset]);
+    __m128i old = data;
+
+    wolfBranch_sse41(data, in[pos2], Opcode, worker);
+    data = _mm_blendv_epi8(old, data, genMask_sse41(16));
+
+    _mm_storeu_si128((__m128i*)&out[pos1 + offset], data);
+    bytes_remaining -= 16;
+    offset += 16;
+  }
+
+  for (int i = pos1 + offset; i < pos2; ++i) {
+    out[i] = wolfBranch(in[i], in[pos2], CodeLUT[op]);
+  }
+}
+
 __attribute__((target("avx512f,avx512bw,avx512vl")))
 void wolfPermute_avx512(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint8_t pos2, workerData &worker)
 {
@@ -200,7 +392,7 @@ void wolfPermute_avx512(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, ui
   _mm256_mask_storeu_epi8((void*)&out[pos1], mask, data);
 }
 
-__attribute__((target("avx2")))
+__attribute__((target("avx,avx2")))
 void wolfPermute_avx2(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint8_t pos2, workerData &worker)
 {
 	uint32_t Opcode = CodeLUT_16[op];
@@ -217,10 +409,9 @@ void wolfPermute_avx2(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint
 
 void wolfPermute(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint8_t pos2, workerData &worker)
 {
-	uint32_t Opcode = CodeLUT[op];
-
-	for(int i = pos1; i < pos2; ++i)
-	{
-		out[i] = wolfBranch(in[i], in[pos2], Opcode);
-	}		
+  uint32_t Opcode = CodeLUT[op];
+  for (int i = pos1; i < pos2; ++i)
+  {
+    out[i] = wolfBranch(in[i], in[pos2], Opcode);
+  }
 }

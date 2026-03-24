@@ -1,6 +1,7 @@
 #include "reporter.hpp"
 #include <numeric>
 #include <iostream>
+#include <debug_stage.h>
 
 const std::string units[] = {" ", " K", " M", " G", " T", " P"}; // Note the space
 
@@ -138,6 +139,31 @@ int update_handler(const boost::system::error_code& error)
               << std::setw(2) << " | DIFFICULTY " << std::setw(6) << std::setfill(' ') << dPrint << std::setw(2) << " | UPTIME " << uptime << std::flush;
     setcolor(BRIGHT_WHITE); 
     fflush(stdout);
+
+    if (astroProfileEnabled) {
+      const std::uint64_t calls = astroProfileCalls.exchange(0, std::memory_order_relaxed);
+      const std::uint64_t pre_ns = astroProfilePreNs.exchange(0, std::memory_order_relaxed);
+      const std::uint64_t compute_ns = astroProfileComputeNs.exchange(0, std::memory_order_relaxed);
+      const std::uint64_t suffix_ns = astroProfileSuffixNs.exchange(0, std::memory_order_relaxed);
+      const std::uint64_t final_ns = astroProfileFinalNs.exchange(0, std::memory_order_relaxed);
+
+      if (calls > 0) {
+        const double total_ns = static_cast<double>(pre_ns + compute_ns + suffix_ns + final_ns);
+        const double avg_us = total_ns / static_cast<double>(calls) / 1000.0;
+        const double pre_pct = total_ns > 0.0 ? (100.0 * static_cast<double>(pre_ns) / total_ns) : 0.0;
+        const double compute_pct = total_ns > 0.0 ? (100.0 * static_cast<double>(compute_ns) / total_ns) : 0.0;
+        const double suffix_pct = total_ns > 0.0 ? (100.0 * static_cast<double>(suffix_ns) / total_ns) : 0.0;
+        const double final_pct = total_ns > 0.0 ? (100.0 * static_cast<double>(final_ns) / total_ns) : 0.0;
+
+        std::cout << "\n[astro-profile] calls=" << calls
+                  << " avg_us=" << std::fixed << std::setprecision(1) << avg_us
+                  << " pre=" << std::setprecision(1) << pre_pct << "%"
+                  << " compute=" << compute_pct << "%"
+                  << " suffix=" << suffix_pct << "%"
+                  << " final=" << final_pct << "%"
+                  << std::defaultfloat << std::flush;
+      }
+    }
 
     reportCounter = 0;
   }

@@ -52,8 +52,11 @@
 #include <stratum/stratum.h>
 
 #include <exception>
+#include <csignal>
+#include <ucontext.h>
 
 #include "reporter.hpp"
+#include <debug_stage.h>
 
 #include <coins/miners.hpp>
 #include <tnn_hip/core/devInfo.hip.h>
@@ -102,6 +105,11 @@ std::vector<std::vector<int64_t>> HIP_rates30sec(32);
 
 std::atomic<int64_t> counter = 0;
 std::atomic<int64_t> benchCounter = 0;
+std::atomic<std::uint64_t> astroProfileCalls = 0;
+std::atomic<std::uint64_t> astroProfilePreNs = 0;
+std::atomic<std::uint64_t> astroProfileComputeNs = 0;
+std::atomic<std::uint64_t> astroProfileSuffixNs = 0;
+std::atomic<std::uint64_t> astroProfileFinalNs = 0;
 boost::asio::io_context my_context;
 boost::asio::steady_timer update_timer = boost::asio::steady_timer(my_context);
 std::chrono::time_point<std::chrono::steady_clock> g_start_time = std::chrono::steady_clock::now();
@@ -198,6 +206,8 @@ using byte = unsigned char;
 int bench_duration = -1;
 bool startBenchmark = false;
 bool stopBenchmark = false;
+thread_local const char *tnnDebugStage = "startup";
+bool astroProfileEnabled = false;
 //------------------------------------------------------------------------------
 
 void openssl_log_callback(const SSL *ssl, int where, int ret)
@@ -300,8 +310,32 @@ void sigint(int signum) {
   exit(signum);
 }
 
+void sigill_handler(int signum, siginfo_t *info, void *context) {
+  (void)signum;
+  void *pc = nullptr;
+#if defined(__x86_64__)
+  ucontext_t *ctx = static_cast<ucontext_t *>(context);
+  pc = reinterpret_cast<void *>(ctx->uc_mcontext.gregs[REG_RIP]);
+#elif defined(__aarch64__)
+  ucontext_t *ctx = static_cast<ucontext_t *>(context);
+  pc = reinterpret_cast<void *>(ctx->uc_mcontext.pc);
+#else
+  (void)context;
+#endif
+
+  fprintf(stderr,
+          "\n[FATAL] SIGILL stage=%s addr=%p pc=%p thread=%zu\n",
+          tnnDebugStage ? tnnDebugStage : "(null)",
+          info ? info->si_addr : nullptr,
+          pc,
+          std::hash<std::thread::id>{}(std::this_thread::get_id()));
+  fflush(stderr);
+  _Exit(128 + SIGILL);
+}
+
 int main(int argc, char **argv)
 {
+  astroProfileEnabled = (std::getenv("TNN_ASTRO_PROFILE") != nullptr);
   // test_cshake256();
 
   // GPUTest();
@@ -320,6 +354,14 @@ int main(int argc, char **argv)
   std::atexit(onExit);
   signal(SIGTERM, sigterm);
   signal(SIGINT, sigint);
+  struct sigaction sa {};
+  sa.sa_sigaction = sigill_handler;
+  sa.sa_flags = SA_SIGINFO;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGILL, &sa, nullptr);
+  if (astroProfileEnabled) {
+    std::cout << "Astro profile enabled via TNN_ASTRO_PROFILE" << std::endl;
+  }
   alignas(64) char buf[65536];
   setvbuf(stdout, buf, _IOFBF, 65536);
   srand(time(NULL)); // Placing higher here to ensure the effect cascades through the entire program
@@ -353,6 +395,7 @@ int main(int argc, char **argv)
   catch (std::exception &e)
   {
     printf("%s v%s %s\n", consoleLine, versionString, targetArch);
+    printf("Build timestamp: %s\n", buildTimestamp);
     std::cerr << "Error: " << e.what() << "\n";
     std::cerr << "Remember: Long options now use a double-dash -- instead of a single-dash -\n";
     return -1;
@@ -371,6 +414,7 @@ int main(int argc, char **argv)
 #endif
   setcolor(BRIGHT_WHITE);
   printf("%s v%s %s\n", consoleLine, versionString, targetArch);
+  printf("Build timestamp: %s\n", buildTimestamp);
   printf("Compiled with %s\n", __VERSION__);
   if(vm.count("quiet")) {
     beQuiet = true;

@@ -24,7 +24,6 @@
 #include <Salsa20.h>
 
 #include <openssl/sha.h>
-#include <openssl/rc4.h>
 
 #include <bitset>
 
@@ -381,6 +380,7 @@ void branchComputeCPU(workerData &worker, bool isTest, int wIndex);
 #endif
 
 void wolfPermute(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint8_t pos2, workerData &worker);
+void wolfPermute_sse41(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint8_t pos2, workerData &worker);
 void wolfPermute_avx512(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint8_t pos2, workerData &worker);
 void wolfPermute_avx2(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint8_t pos2, workerData &worker);
 void wolfSame(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint8_t pos2, workerData &worker);
@@ -396,6 +396,8 @@ static inline wolfPerm resolve_wolfPermute() {
   //  return wolfPermute_avx512;
   if (__builtin_cpu_supports("avx2"))
     return wolfPermute_avx2;
+  if (__builtin_cpu_supports("sse4.1") && __builtin_cpu_supports("ssse3"))
+    return wolfPermute_sse41;
   #endif
   return wolfPermute;
 }

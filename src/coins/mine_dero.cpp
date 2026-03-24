@@ -2,9 +2,11 @@
 #include "tnn-hugepages.h"
 #include <astrobwtv3/astrobwtv3.h>
 #include <astrobwtv3/lookupcompute.h>
+#include <debug_stage.h>
 
 void mineDero(int tid)
 {
+  setDebugStage("dero-thread-start");
   byte random_buf[12];
   std::random_device rd;
   std::mt19937 gen(rd());
@@ -24,6 +26,7 @@ void mineDero(int tid)
   byte work[MINIBLOCK_SIZE*DERO_BATCH];
 
   workerData *worker = (workerData *)malloc_huge_pages(sizeof(workerData));
+  setDebugStage("dero-worker-init");
   initWorker(*worker);
   lookupGen(*worker, nullptr, nullptr);
 
@@ -33,6 +36,7 @@ waitForJob:
 
   while (!isConnected)
   {
+    setDebugStage("dero-wait-for-job");
     CHECK_CLOSE;
     boost::this_thread::sleep_for(boost::chrono::milliseconds(100));
   }
@@ -44,6 +48,7 @@ waitForJob:
       boost::json::value myJob;
       boost::json::value myJobDev;
       {
+        setDebugStage("dero-copy-job");
         std::scoped_lock<boost::mutex> lockGuard(mutex);
         myJob = job;
         myJobDev = devJob;
@@ -95,6 +100,7 @@ waitForJob:
       int32_t nonce = 0;
       while (localJobCounter == jobCounter)
       {
+        setDebugStage("dero-loop");
         CHECK_CLOSE;
         which = (double)(rand() % 10000);
         devMine = (devConnected && which < devFee * 100.0);
@@ -114,6 +120,7 @@ waitForJob:
         // swap endianness
         if (littleEndian())
         {
+          setDebugStage("dero-swap-nonce");
           for (int i = 0; i < DERO_BATCH; i++) {
             std::swap(WORK[MINIBLOCK_SIZE*i + MINIBLOCK_SIZE - 5], WORK[MINIBLOCK_SIZE*i + MINIBLOCK_SIZE - 2]);
             std::swap(WORK[MINIBLOCK_SIZE*i + MINIBLOCK_SIZE - 4], WORK[MINIBLOCK_SIZE*i + MINIBLOCK_SIZE - 3]);
@@ -124,7 +131,9 @@ waitForJob:
         //   printf("%02x", WORK[i]);
         // }
         // printf("\n");
+        setDebugStage("dero-astrobwtv3");
         AstroBWTv3(WORK, MINIBLOCK_SIZE, powHash, *worker, useLookupMine);
+        setDebugStage("dero-checkhash");
         // AstroBWTv3_batch((byte*)"b", 1, powHash, *worker, useLookupMine);
         // for (int i = 0; i < 32; i++) {
         //   printf("%02x", powHash[i]);
