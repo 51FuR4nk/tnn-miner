@@ -60,9 +60,10 @@ void initWolfLUT() {
 
 #if defined(__x86_64)
 
-__attribute__((target("avx2")))
+__attribute__((target("avx,avx2")))
 void wolfBranch_avx2(__m256i &in, uint8_t pos2val, uint32_t opcode, workerData &worker)
 {
+  const __m256i vec_3_local = _mm256_set1_epi8(3);
   for (int i = 3; i >= 0; --i)
   {
     uint8_t insn = (opcode >> (i << 2)) & 0xF;
@@ -87,10 +88,10 @@ void wolfBranch_avx2(__m256i &in, uint8_t pos2val, uint32_t opcode, workerData &
       in = _mm256_and_si256(in, _mm256_set1_epi8(pos2val));
       break;
     case 6:
-      in = _mm256_sllv_epi8(in,_mm256_and_si256(in,vec_3));
+      in = _mm256_sllv_epi8(in,_mm256_and_si256(in,vec_3_local));
       break;
     case 7:
-      in = _mm256_srlv_epi8(in,_mm256_and_si256(in,vec_3));
+      in = _mm256_srlv_epi8(in,_mm256_and_si256(in,vec_3_local));
       break;
     case 8:
       in = _mm256_reverse_epi8(in);
@@ -200,7 +201,7 @@ void wolfPermute_avx512(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, ui
   _mm256_mask_storeu_epi8((void*)&out[pos1], mask, data);
 }
 
-__attribute__((target("avx2")))
+__attribute__((target("avx,avx2")))
 void wolfPermute_avx2(uint8_t *in, uint8_t *out, uint16_t op, uint8_t pos1, uint8_t pos2, workerData &worker)
 {
 	uint32_t Opcode = CodeLUT_16[op];

@@ -375,7 +375,7 @@ void branchComputeCPU(workerData &worker, bool isTest, int wIndex);
 #define WOLF_FMV \
     __attribute__ ((target("default"))) \
     __attribute__ ((target("sse2"))) \
-    __attribute__ ((target("avx2")))
+    __attribute__ ((target("avx,avx2")))
 #else
 #define WOLF_FMV
 #endif

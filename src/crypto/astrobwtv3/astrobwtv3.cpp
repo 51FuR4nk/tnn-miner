@@ -8291,8 +8291,6 @@ void branchComputeCPU_avx2_zOptimized(workerData &worker, bool isTest, int wInde
 
 // SIMD chunk copy
 
-#if defined(__x86_64__)
-
     //     __builtin_prefetch(worker.prev_chunk,0,3);
     //     __builtin_prefetch(worker.prev_chunk+64,0,3);
     //     __builtin_prefetch(worker.prev_chunk+128,0,3);
@@ -8329,34 +8327,6 @@ void branchComputeCPU_avx2_zOptimized(workerData &worker, bool isTest, int wInde
     //     }
     //   }
     // }
-
-__attribute__ ((target("avx512f")))
-// // Copy prev_chunk between start -> end to chunk (inclusive)
-inline void copyChunkData(workerData &worker, uint8_t start, uint8_t end) {
-  for (int i = start; i + 63 < end; i += 64) {
-    __m512i prev_data = _mm512_loadu_si512((__m512i*)&worker.prev_chunk[i]);
-    _mm512_storeu_si512((__m512i*)&worker.chunk[i], prev_data);
-  }
-}
-
-__attribute__ ((target("avx2")))
-// Copy prev_chunk between start -> end to chunk (inclusive)
-void copyChunkData(workerData &worker, int start, int end) {
-  for (int i = start; i < end; i += 32) {
-    __m256i prev_data = _mm256_loadu_si256((__m256i*)&worker.prev_chunk[i]);
-    _mm256_storeu_si256((__m256i*)&worker.chunk[i], prev_data);
-  }
-}
-__attribute__ ((target("sse2")))
-// Copy prev_chunk between start -> end to chunk (inclusive)
-void copyChunkData(workerData &worker, int start, int end) {
-  for (int i = start; i < end; i += 16) {
-    __m128i prev_data = _mm_loadu_si128((__m128i*)&worker.prev_chunk[i]);
-    _mm_storeu_si128((__m128i*)&worker.chunk[i], prev_data);
-  }
-}
-__attribute__ ((target("default")))
-#endif
 
 // Copy prev_chunk between start -> end to chunk (inclusive)
 void copyChunkData(workerData &worker, int start, int end) {
@@ -8979,5 +8949,3 @@ void lookupCompute(workerData &worker, bool isTest, int wIndex)
 
 //   worker.data_len = static_cast<uint32_t>((worker.tries[wIndex] - 4) * 256 + (((static_cast<uint64_t>(worker.chunk[253]) << 8) | static_cast<uint64_t>(worker.chunk[254])) & 0x3ff));
 // }
-
-
