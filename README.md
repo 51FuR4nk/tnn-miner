@@ -27,6 +27,30 @@ Install Boost development dependency, too
 sudo apt install libboost1.83-all-dev
 ```
 
+### Ubuntu 20.04 (Focal) / portable static build
+If you need a binary that runs on Ubuntu 20.04, build it in the provided Docker environment instead of compiling directly on a newer distro. This avoids linking against a newer `glibc`.
+
+CPU-only Ubuntu 20 build:
+```
+./go-docker-ubuntu20.sh amd64 0.0.1
+```
+
+The exported artifacts are written to:
+```
+./export-ubuntu20/tnn-miner-cpu
+./export-ubuntu20/tnn-miner-ubuntu20-amd64-0.0.1.tar.gz
+```
+
+For older Intel CPUs without AVX2, set a conservative target. Example for Intel J3455 / Goldmont:
+```
+CPU_ARCHTARGET=goldmont ASTRO_SPSA_MODE=on RUN_TESTS=OFF ./go-docker-ubuntu20.sh amd64 0.0.1
+```
+
+Notes:
+- `ASTRO_SPSA_MODE=on` enables the faster Astro suffix-array backend for Goldmont-class CPUs.
+- `RUN_TESTS=OFF` skips the built-in test suite during packaging.
+- The resulting binary is still statically linked and intended for Ubuntu 20.04 runtime compatibility.
+
 ### Windows: Building the easy way!
 Use the prereqs.bat scripts (one-time only)
 This will download mingw and a few other libraries like Boost and OpenSSL
