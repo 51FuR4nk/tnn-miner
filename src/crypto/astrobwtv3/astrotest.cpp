@@ -3830,46 +3830,41 @@ void optest_branchcpu(int op, workerData &worker, byte testData[32], OpTestResul
   return; 
 }
 
-// void optest_lookup(int op, workerData &worker, byte testData[32], OpTestResult &testRes, bool print) {
-//   // Set us up the bomb
-//   memset(worker.step_3, 0, 256);
-//   memcpy(worker.step_3, testData, 32);
+void optest_lookup(int op, workerData &worker, byte testData[32], OpTestResult &testRes, bool print) {
+  memset(worker.step_3, 0, 256);
+  memcpy(worker.step_3, testData, 32);
 
-//   // Because lookupCompute references .chunk (which is a pointer)
-//   worker.chunk = &worker.step_3[0];
-//   worker.prev_chunk = worker.chunk;
-//   if (print){
-//     printf("Lookup\n");
-//     printf("LT Input %3d  : ", op);
-//     for (int i = worker.pos1; i < worker.pos1 + 32; i++) {
-//       printf("%02X ", worker.chunk[i]);
-//     }
-//     printf("\n");
-//   }
+  worker.chunk = &worker.step_3[0];
+  worker.prev_chunk = worker.chunk;
+  if (print){
+    printf("Lookup\n");
+    printf("LT Input %3d  : ", op);
+    for (int i = worker.pos1; i < worker.pos1 + 32; i++) {
+      printf("%02X ", worker.chunk[i]);
+    }
+    printf("\n");
+  }
 
-//   auto start = std::chrono::steady_clock::now();
-//   for(int x = 0; x < 256; x++) {
-//     worker.op = op;
-//     //worker.pos1 = 0; worker.pos2 = 32;
-//     worker.chunk = worker.step_3;
-//     worker.prev_chunk = worker.chunk;
-//     lookupCompute(worker, true, 0);
-//   }
+  auto start = std::chrono::steady_clock::now();
+  for(int x = 0; x < 256; x++) {
+    worker.op = op;
+    worker.chunk = worker.step_3;
+    worker.prev_chunk = worker.chunk;
+    lookupCompute(worker, true, 0);
+  }
 
-//   auto test_end = std::chrono::steady_clock::now();
-//   auto test_time = std::chrono::duration_cast<std::chrono::nanoseconds>(test_end-start);
-//   testRes.duration_ns = test_time;
-//   memcpy(testRes.result, worker.chunk, 256);
-//   //memcpy(testRes.result, worker.salsaInput, 256);
-//   if (print){
-//     printf("LT result     : ");
-//     for (int i = worker.pos1; i < worker.pos1 + 32; i++) {
-//       printf("%02x ", worker.chunk[i]);
-//     }
-//     printf("\n took %lld ns\n---------------\n", test_time.count());
-//   }
-//   return; 
-// }
+  auto test_end = std::chrono::steady_clock::now();
+  auto test_time = std::chrono::duration_cast<std::chrono::nanoseconds>(test_end-start);
+  testRes.duration_ns = test_time;
+  memcpy(testRes.result, worker.chunk, 256);
+  if (print){
+    printf("LT result     : ");
+    for (int i = worker.pos1; i < worker.pos1 + 32; i++) {
+      printf("%02x ", worker.chunk[i]);
+    }
+    printf("\n took %lld ns\n---------------\n", test_time.count());
+  }
+}
 
 void optest_wolf(int op, workerData &worker, byte testData[32], OpTestResult &testRes, bool print) {
   // Set us up the bomb

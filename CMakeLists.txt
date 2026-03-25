@@ -73,6 +73,9 @@ if(DEFINED TNN_VERSION)
 endif()
 
 string(REGEX REPLACE "^[a-zA-Z]" ""  INTERNAL_TNN_VERSION ${INTERNAL_TNN_VERSION})
+string(TIMESTAMP BUILD_TIMESTAMP_UTC "%Y-%m-%d %H:%M:%S UTC" UTC)
+
+add_compile_definitions(TNN_BUILD_TIMESTAMP="${BUILD_TIMESTAMP_UTC}")
 
 # TNN Options
 # option(WITH_CN_LITE         "Enable CryptoNight-Lite algorithms family" ON)

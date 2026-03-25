@@ -27,6 +27,7 @@
 
 #if defined(__x86_64__)
   #include <xmmintrin.h>
+  #include <cpuid.h>
 #endif
 #if defined(__aarch64__)
   #include "astro_aarch64.hpp"
@@ -44,6 +45,7 @@
 #include <filesystem>
 #include <functional>
 #include "lookupcompute.h"
+#include <debug_stage.h>
 #if defined(USE_ASTRO_SPSA)
   #include "spsa.hpp"
 #else
@@ -59,7 +61,8 @@ extern "C"
 #include <utility>
 
 #include <hex.h>
-#include <openssl/rc4.h>
+
+#include <sha256_shani.h>
 
 #include <fstream>
 
@@ -190,14 +193,35 @@ void astroTune(int num_threads, int tuneWarmupSec, int tuneDurationSec) {
     for (int x = 0; x < numAstroFuncs; x++)
     {
       astroCompFunc = allAstroFuncs[x].funcPtr;
+      fprintf(stderr,
+              "[astro-tune] algo=%s stage=launch threads=%d warmup_ms=%lld duration_ms=%lld\n",
+              allAstroFuncs[x].funcName.c_str(),
+              num_threads,
+              static_cast<long long>(tuneWarmupMs),
+              static_cast<long long>(tuneDurationMs));
+      fflush(stderr);
 
       // Start each thread with an inline lambda function
       for (int i = 0; i < num_threads; ++i) {
-        tune_threads[i] = boost::thread([&]() {
+        tune_threads[i] = boost::thread([&, x, i]() {
           int tid = i;
+          fprintf(stderr, "[astro-tune] algo=%s thread=%d stage=alloc\n", allAstroFuncs[x].funcName.c_str(), tid);
+          fflush(stderr);
           workerData *worker = (workerData *)malloc_huge_pages(sizeof(workerData));
+
+          fprintf(stderr, "[astro-tune] algo=%s thread=%d stage=init-worker\n", allAstroFuncs[x].funcName.c_str(), tid);
+          fflush(stderr);
           initWorker(*worker);
+
+          fprintf(stderr, "[astro-tune] algo=%s thread=%d stage=lookupgen\n", allAstroFuncs[x].funcName.c_str(), tid);
+          fflush(stderr);
           lookupGen(*worker, nullptr, nullptr);
+
+          fprintf(stderr, "[astro-tune] algo=%s thread=%d stage=first-hash-begin\n", allAstroFuncs[x].funcName.c_str(), tid);
+          fflush(stderr);
+          AstroBWTv3(random_buffer, 48, res, *worker, false);
+          fprintf(stderr, "[astro-tune] algo=%s thread=%d stage=first-hash-ok\n", allAstroFuncs[x].funcName.c_str(), tid);
+          fflush(stderr);
 
           auto warmupStart = std::chrono::steady_clock::now();
           for(;;) {
@@ -219,6 +243,8 @@ void astroTune(int num_threads, int tuneWarmupSec, int tuneDurationSec) {
           hashLock.lock();
           numHashes[x] += hashes;
           hashLock.unlock();
+          fprintf(stderr, "[astro-tune] algo=%s thread=%d stage=done hashes=%d\n", allAstroFuncs[x].funcName.c_str(), tid, hashes);
+          fflush(stderr);
         });
       }
       // Wait for all threads to finish
@@ -252,6 +278,49 @@ void hashSHA256(SHA256_CTX &sha256, const byte *input, byte *digest, unsigned lo
   SHA256_Init(&sha256);
   SHA256_Update(&sha256, input, inputSize);
   SHA256_Final(digest, &sha256);
+}
+
+/* SHA-NI fast path: bypasses OpenSSL, includes software prefetching */
+#if defined(__x86_64__)
+static bool g_has_shani = false;
+static bool g_shani_checked = false;
+
+static inline bool detect_shani() {
+  if (!g_shani_checked) {
+    unsigned int eax = 0;
+    unsigned int ebx = 0;
+    unsigned int ecx = 0;
+    unsigned int edx = 0;
+    const bool has_sha_leaf = __get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx) != 0;
+    const bool has_sha_ni = has_sha_leaf && ((ebx & (1u << 29)) != 0);
+    g_has_shani = has_sha_ni &&
+                  __builtin_cpu_supports("sse4.1") &&
+                  __builtin_cpu_supports("ssse3");
+    g_shani_checked = true;
+  }
+  return g_has_shani;
+}
+#endif
+
+static inline void hashSHA256_fast(const byte *input, byte *digest, unsigned long inputSize)
+{
+#if defined(__x86_64__) && defined(__SHA__)
+  sha256_shani(input, inputSize, digest);
+#elif defined(__x86_64__)
+  if (detect_shani()) {
+    sha256_shani(input, inputSize, digest);
+    return;
+  }
+  SHA256_CTX ctx;
+  SHA256_Init(&ctx);
+  SHA256_Update(&ctx, input, inputSize);
+  SHA256_Final(digest, &ctx);
+#else
+  SHA256_CTX ctx;
+  SHA256_Init(&ctx);
+  SHA256_Update(&ctx, input, inputSize);
+  SHA256_Final(digest, &ctx);
+#endif
 }
 
 std::vector<uint8_t> padSHA256Input(const uint8_t* input, size_t length) {
@@ -688,25 +757,44 @@ void AstroBWTv3(byte *input, int inputLen, byte *outputhash, workerData &worker,
 
   try
   {
+    const bool collectProfile = astroProfileEnabled;
+    std::uint64_t pre_ns = 0;
+    std::uint64_t compute_ns = 0;
+    std::uint64_t suffix_ns = 0;
+    std::uint64_t final_ns = 0;
+    auto stage_start = std::chrono::steady_clock::now();
+
+    setDebugStage("astro-sha256-1");
     uint8_t scratch[384] = {0};
     
     hashSHA256(worker.sha256, input, &scratch[320], inputLen);
+    setDebugStage("astro-salsa-init");
     worker.salsa20.setKey(&scratch[320]);
     worker.salsa20.setIv(&scratch[256]);
 
+    setDebugStage("astro-salsa-bytes");
     worker.salsa20.processBytes(worker.salsaInput, scratch, 256);
 
+    setDebugStage("astro-rc4-init");
     RC4_set_key(&worker.key[0], 256,  scratch);
+    setDebugStage("astro-rc4-run");
     RC4(&worker.key[0], 256, scratch,  scratch);
 
 
+    setDebugStage("astro-lhash-init");
     worker.lhash = hash_64_fnv1a_256(scratch);
     worker.prev_lhash = worker.lhash;
 
     worker.tries[0] = 0;
     worker.isSame = false;
 
+    setDebugStage("astro-precompute");
     memcpy(worker.sData, scratch, 256);
+    if (collectProfile) {
+      auto now = std::chrono::steady_clock::now();
+      pre_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - stage_start).count());
+      stage_start = now;
+    }
 
     // printf(hexStr(worker.chunk, 256).c_str());
     // printf("\n\n");
@@ -735,7 +823,13 @@ void AstroBWTv3(byte *input, int inputLen, byte *outputhash, workerData &worker,
     }
     */
 
+    setDebugStage("astro-compute");
     astroCompFunc(worker, false, 0);
+    if (collectProfile) {
+      auto now = std::chrono::steady_clock::now();
+      compute_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - stage_start).count());
+      stage_start = now;
+    }
 
     // auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(end-start);
     // if (!lookupMine) printf("AVX2: ");
@@ -763,20 +857,40 @@ void AstroBWTv3(byte *input, int inputLen, byte *outputhash, workerData &worker,
     // printf("data length: %d\n", worker.data_len);
     // auto start = std::chrono::steady_clock::now();
     // divsufsort(worker.sData, worker.sa, worker.data_len, worker.bA, worker.bB);
-    #if defined(USE_ASTRO_SPSA)
+#if defined(USE_ASTRO_SPSA)
+      setDebugStage("astro-spsa");
       bool alreadySha = SPSA(worker.sData, worker.data_len, worker);
+      if (collectProfile) {
+        auto now = std::chrono::steady_clock::now();
+        suffix_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - stage_start).count());
+        stage_start = now;
+      }
       if(alreadySha) {
         //printf("alreadySha\n");
         memcpy(outputhash, worker.padding, 32);
       } else {
         byte *B = reinterpret_cast<byte *>(worker.sa);
+        setDebugStage("astro-sha256-2");
         hashSHA256(worker.sha256, B, outputhash, worker.data_len*4);
       }
     #else
+      setDebugStage("astro-divsufsort");
       divsufsort(worker.sData, worker.sa, worker.data_len, worker.bA, worker.bB);
+      if (collectProfile) {
+        auto now = std::chrono::steady_clock::now();
+        suffix_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - stage_start).count());
+        stage_start = now;
+      }
       byte *B = reinterpret_cast<byte *>(worker.sa);
+      setDebugStage("astro-sha256-2");
       hashSHA256(worker.sha256, B, outputhash, worker.data_len*4);
     #endif
+    if (collectProfile) {
+      auto now = std::chrono::steady_clock::now();
+      final_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - stage_start).count());
+      recordAstroProfile(pre_ns, compute_ns, suffix_ns, final_ns);
+    }
+    setDebugStage("astro-done");
     // auto end = std::chrono::steady_clock::now();
     // auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(end-start);
     // printf("SA section took %dns\n", time.count());
@@ -8331,36 +8445,54 @@ void branchComputeCPU_avx2_zOptimized(workerData &worker, bool isTest, int wInde
     // }
 
 __attribute__ ((target("avx512f")))
-// // Copy prev_chunk between start -> end to chunk (inclusive)
-inline void copyChunkData(workerData &worker, uint8_t start, uint8_t end) {
-  for (int i = start; i + 63 < end; i += 64) {
+static inline void copyChunkData_avx512(workerData &worker, int start, int end) {
+  int i = start;
+  for (; i + 63 < end; i += 64) {
     __m512i prev_data = _mm512_loadu_si512((__m512i*)&worker.prev_chunk[i]);
     _mm512_storeu_si512((__m512i*)&worker.chunk[i], prev_data);
   }
+  std::copy_n(&worker.prev_chunk[i], end - i, &worker.chunk[i]);
 }
 
 __attribute__ ((target("avx2")))
-// Copy prev_chunk between start -> end to chunk (inclusive)
-void copyChunkData(workerData &worker, int start, int end) {
-  for (int i = start; i < end; i += 32) {
+static inline void copyChunkData_avx2(workerData &worker, int start, int end) {
+  int i = start;
+  for (; i + 31 < end; i += 32) {
     __m256i prev_data = _mm256_loadu_si256((__m256i*)&worker.prev_chunk[i]);
     _mm256_storeu_si256((__m256i*)&worker.chunk[i], prev_data);
   }
+  std::copy_n(&worker.prev_chunk[i], end - i, &worker.chunk[i]);
 }
+
 __attribute__ ((target("sse2")))
-// Copy prev_chunk between start -> end to chunk (inclusive)
-void copyChunkData(workerData &worker, int start, int end) {
-  for (int i = start; i < end; i += 16) {
+static inline void copyChunkData_sse2(workerData &worker, int start, int end) {
+  int i = start;
+  for (; i + 15 < end; i += 16) {
     __m128i prev_data = _mm_loadu_si128((__m128i*)&worker.prev_chunk[i]);
     _mm_storeu_si128((__m128i*)&worker.chunk[i], prev_data);
   }
+  std::copy_n(&worker.prev_chunk[i], end - i, &worker.chunk[i]);
 }
-__attribute__ ((target("default")))
 #endif
 
-// Copy prev_chunk between start -> end to chunk (inclusive)
-void copyChunkData(workerData &worker, int start, int end) {
+static inline void copyChunkData_scalar(workerData &worker, int start, int end) {
   std::copy_n(&worker.prev_chunk[start], end - start, &worker.chunk[start]);
+}
+
+void copyChunkData(workerData &worker, int start, int end) {
+#if defined(__x86_64__)
+  if (__builtin_cpu_supports("avx512f")) {
+    copyChunkData_avx512(worker, start, end);
+    return;
+  }
+  if (__builtin_cpu_supports("avx2")) {
+    copyChunkData_avx2(worker, start, end);
+    return;
+  }
+  copyChunkData_sse2(worker, start, end);
+#else
+  copyChunkData_scalar(worker, start, end);
+#endif
 }
 
 // WOLF CODE
@@ -8979,5 +9111,3 @@ void lookupCompute(workerData &worker, bool isTest, int wIndex)
 
 //   worker.data_len = static_cast<uint32_t>((worker.tries[wIndex] - 4) * 256 + (((static_cast<uint64_t>(worker.chunk[253]) << 8) | static_cast<uint64_t>(worker.chunk[254])) & 0x3ff));
 // }
-
-
