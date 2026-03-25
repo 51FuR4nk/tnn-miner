@@ -1,0 +1,73 @@
+# syntax=docker/dockerfile:1.7
+
+ARG IMAGE_VERSION=ubuntu:20.04
+FROM ${IMAGE_VERSION} AS build
+
+ARG LLVM_VERSION=18
+ARG PACKAGE_VERSION=0.0.0
+ARG CMAKE_ARGS="-DWITH_HIP=OFF -DUSE_CPM_BOOST=ON"
+ARG TARGZ_FILE=tnn-miner-ubuntu20.tar.gz
+ARG RUN_TESTS=ON
+ARG CPU_ARCHTARGET=
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /src
+
+SHELL ["/bin/bash", "-lc"]
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
+      build-essential \
+      ca-certificates \
+      curl \
+      git \
+      gnupg \
+      libc++-dev \
+      libnuma-dev \
+      libsodium-dev \
+      libssl-dev \
+      libudns-dev \
+      lsb-release \
+      ninja-build \
+      python3 \
+      python3-pip \
+      software-properties-common \
+      wget \
+      zstd
+
+RUN wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh && \
+    chmod +x /tmp/llvm.sh && \
+    /tmp/llvm.sh ${LLVM_VERSION} && \
+    apt-get install -y clang-${LLVM_VERSION} lld-${LLVM_VERSION}
+
+RUN pip3 install --no-cache-dir "cmake>=3.28,<4"
+
+COPY . .
+
+RUN --mount=type=cache,target=/src/_deps \
+    mkdir -p /src/_deps && \
+    CPU_ARCHTARGET="${CPU_ARCHTARGET}" cmake -S . -B build -G Ninja \
+      -DCMAKE_C_COMPILER=clang-${LLVM_VERSION} \
+      -DCMAKE_CXX_COMPILER=clang++-${LLVM_VERSION} \
+      -DTNN_VERSION=${PACKAGE_VERSION} \
+      ${CMAKE_ARGS}
+
+RUN --mount=type=cache,target=/src/_deps \
+    cmake --build build -j"$(nproc)"
+
+RUN if [[ "${RUN_TESTS}" == "ON" ]]; then \
+      ./build/bin/tnn-miner-cpu --test-dero --quiet && \
+      ./build/bin/tnn-miner-cpu --test-spectre --quiet && \
+      ./build/bin/tnn-miner-cpu --test-xelis --quiet; \
+    fi
+
+RUN cp ./build/bin/tnn-miner-cpu ./ && \
+    tar -czvf "${TARGZ_FILE}" ./tnn-miner-cpu
+
+FROM scratch
+
+ARG TARGZ_FILE=tnn-miner-ubuntu20.tar.gz
+
+COPY --from=build /src/build/bin/tnn-miner-cpu /
+COPY --from=build /src/${TARGZ_FILE} /
